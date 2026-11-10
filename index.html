@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="af">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>MOS Scan</title>
+<meta name="theme-color" content="#0f6e5c">
+<style>
+:root{--accent:#0f6e5c;--ink:#14201c;--bad:#b42318;--card:#fff;--bg:#0c1412}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;flex-direction:column;height:100%;padding:12px 16px;gap:12px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+h1{margin:0;font-size:18px;letter-spacing:.06em;text-transform:uppercase}
+button{font:inherit;font-weight:700;border:0;border-radius:8px;padding:12px 16px;cursor:pointer}
+.ghost{background:rgba(255,255,255,.14);color:#fff}
+.go{background:var(--accent);color:#fff}
+#reader{width:100%;border-radius:12px;overflow:hidden;background:#000;min-height:260px}
+#reader video{border-radius:12px}
+.msg{font-size:15px;line-height:1.4;text-align:center;opacity:.9}
+.msg.bad{color:#ffb4ab}
+.code{font-family:ui-monospace,Menlo,monospace;font-size:26px;text-align:center;background:#fff;color:var(--ink);border-radius:8px;padding:12px;word-break:break-all}
+.row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><h1>MOS Scan</h1><button class="ghost" id="close" type="button">Kanselleer</button></div>
+  <div id="reader"></div>
+  <div class="msg" id="msg">Rig die kamera op die barcode.</div>
+  <div id="done" hidden>
+    <div class="code" id="code"></div>
+    <div class="msg">Tik die kode in die app as hy nie self deurgaan nie.</div>
+    <div class="row" style="margin-top:10px"><button class="go" id="again" type="button">Scan nog een</button></div>
+  </div>
+</div>
+<script src="html5-qrcode.min.js"></script>
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id)};
+  var opener=null;try{opener=window.opener}catch(e){}
+  var scanner=null,busy=false;
+  function send(code){
+    if(opener){try{opener.postMessage({mosScan:code},'*')}catch(e){}}
+  }
+  function finish(code){
+    if(navigator.vibrate)try{navigator.vibrate(80)}catch(e){}
+    send(code);
+    stop().then(function(){
+      if(opener){window.close();}
+      // As die blad nie toegemaak kon word nie (of daar is geen app nie), wys die kode.
+      setTimeout(function(){$('code').textContent=code;$('done').hidden=false;$('msg').hidden=true},300);
+    });
+  }
+  function stop(){return scanner&&scanner.isScanning?scanner.stop().catch(function(){}):Promise.resolve()}
+  function start(){
+    busy=false;$('done').hidden=true;$('msg').hidden=false;$('msg').className='msg';$('msg').textContent='Rig die kamera op die barcode.';
+    var F=Html5QrcodeSupportedFormats;
+    scanner=scanner||new Html5Qrcode('reader',{verbose:false,
+      formatsToSupport:[F.EAN_13,F.EAN_8,F.UPC_A,F.UPC_E,F.CODE_128,F.CODE_39,F.ITF,F.QR_CODE],
+      experimentalFeatures:{useBarCodeDetectorIfSupported:true}});
+    scanner.start({facingMode:'environment'},
+      {fps:12,qrbox:function(w,h){var s=Math.min(w,h);return {width:Math.round(w*0.85),height:Math.round(s*0.5)}},aspectRatio:1.333},
+      function(text){if(busy)return;busy=true;finish(String(text).trim())},
+      function(){}
+    ).catch(function(err){
+      $('msg').className='msg bad';
+      $('msg').textContent='Kon nie die kamera oopmaak nie. Gee toestemming vir die kamera in die blaaier se instellings en probeer weer. ('+(err&&err.name||err)+')';
+    });
+  }
+  $('close').onclick=function(){stop().then(function(){window.close();history.length>1&&history.back()})};
+  $('again').onclick=start;
+  start();
+})();
+</script>
+</body>
+</html>
