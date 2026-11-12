@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="af">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -9,69 +9,181 @@
 :root{--accent:#0f6e5c;--ink:#14201c;--bad:#b42318;--card:#fff;--bg:#0c1412}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-.wrap{display:flex;flex-direction:column;height:100%;padding:12px 16px;gap:12px}
-.top{display:flex;justify-content:space-between;align-items:center;gap:10px}
-h1{margin:0;font-size:18px;letter-spacing:.06em;text-transform:uppercase}
+.wrap{display:flex;flex-direction:column;min-height:100%;padding:10px 14px;gap:10px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+h1{margin:0;font-size:17px;letter-spacing:.06em;text-transform:uppercase}
+.sub{font-size:13px;opacity:.8}
 button{font:inherit;font-weight:700;border:0;border-radius:8px;padding:12px 16px;cursor:pointer}
 .ghost{background:rgba(255,255,255,.14);color:#fff}
 .go{background:var(--accent);color:#fff}
-#reader{width:100%;border-radius:12px;overflow:hidden;background:#000;min-height:260px}
+.small{padding:8px 12px;font-size:14px}
+#reader{width:100%;border-radius:12px;overflow:hidden;background:#000;min-height:220px}
 #reader video{border-radius:12px}
 .msg{font-size:15px;line-height:1.4;text-align:center;opacity:.9}
 .msg.bad{color:#ffb4ab}
+.msg.good{color:#9be7c4}
+.card{background:#fff;color:var(--ink);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.name{font-size:20px;font-weight:800;line-height:1.2}
+.codeline{font-family:ui-monospace,Menlo,monospace;font-size:14px;color:#55635e;word-break:break-all}
+.warn{background:#fcefd4;color:#6b4a00;border-radius:8px;padding:8px 10px;font-size:14px}
+#qty{font:inherit;font-family:ui-monospace,Menlo,monospace;font-size:30px;font-weight:600;text-align:center;width:100%;padding:10px;border:2px solid var(--accent);border-radius:8px;color:var(--ink)}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
 .code{font-family:ui-monospace,Menlo,monospace;font-size:26px;text-align:center;background:#fff;color:var(--ink);border-radius:8px;padding:12px;word-break:break-all}
-.row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
 [hidden]{display:none!important}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="top"><h1>MOS Scan</h1><button class="ghost" id="close" type="button">Kanselleer</button></div>
+  <div class="top">
+    <div><h1>MOS Scan</h1><div class="sub" id="where"></div></div>
+    <div class="row" style="flex:0 0 auto"><button class="ghost small" id="torch" type="button" hidden>Light</button><button class="ghost small" id="close" type="button">Done</button></div>
+  </div>
   <div id="reader"></div>
-  <div class="msg" id="msg">Rig die kamera op die barcode.</div>
+  <div class="msg" id="msg">Point the camera at the barcode.</div>
+
+  <!-- continuous mode: product + quantity -->
+  <div class="card" id="item" hidden>
+    <div><div class="name" id="i-name"></div><div class="codeline" id="i-code"></div></div>
+    <div class="warn" id="i-warn" hidden></div>
+    <input id="qty" type="number" inputmode="decimal" step="any" min="0" placeholder="Qty" autocomplete="off">
+    <div class="row"><button class="ghost" id="i-skip" type="button" style="background:#e2e9e6;color:#13201c">Skip</button><button class="go" id="i-save" type="button">Save</button></div>
+  </div>
+
+  <!-- old single-scan mode: shown only if the app could not be reached -->
   <div id="done" hidden>
     <div class="code" id="code"></div>
-    <div class="msg">Tik die kode in die app as hy nie self deurgaan nie.</div>
-    <div class="row" style="margin-top:10px"><button class="go" id="again" type="button">Scan nog een</button></div>
+    <div class="msg">Type this code into the app if it did not go through by itself.</div>
+    <div class="row" style="margin-top:10px"><button class="go" id="again" type="button">Scan another</button></div>
   </div>
 </div>
 <script src="html5-qrcode.min.js"></script>
 <script>
 (function(){
-  var $=function(id){return document.getElementById(id)};
-  var opener=null;try{opener=window.opener}catch(e){}
-  var scanner=null,busy=false;
-  function send(code){
-    if(opener){try{opener.postMessage({mosScan:code},'*')}catch(e){}}
+var $=function(id){return document.getElementById(id)};
+var APP_ORIGINS=/^https:\/\/([a-z0-9-]+\.)*(googleusercontent\.com|google\.com)$/i;
+var opener=null;try{opener=window.opener}catch(e){}
+var scanner=null,busy=false,started=false;
+var live=false;            // true once the app answered: continuous mode
+var prods=null;            // Map CODE -> {kode,naam}
+var allow=null;            // recount: only these codes may be counted
+var cur=null;              // product being counted
+var saved=0,lastCode='',lastAt=0,torchOn=false;
+var KEY='mos_scan_pending',t0=Date.now();
+
+/* ---------- messages to and from the app ---------- */
+function post(m){if(opener){try{opener.postMessage(m,'*')}catch(e){}}}
+function pending(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){return []}}
+function setPending(l){try{localStorage.setItem(KEY,JSON.stringify(l))}catch(e){}}
+function resend(){var l=pending();for(var i=0;i<l.length;i++)post({mosQty:l[i]});status()}
+function status(){
+  var n=pending().length;
+  $('where').textContent=(live?(window.__plek||'')+' · '+saved+' saved':'')+(n?' · '+n+' not confirmed yet':'');
+}
+window.addEventListener('message',function(e){
+  if(!e.data||!APP_ORIGINS.test(e.origin))return;
+  var d=e.data;
+  if(d.mosApp>=2){
+    live=true;window.__plek=d.plek||'';
+    if(d.prods){prods={};for(var i=0;i<d.prods.length;i++)prods[String(d.prods[i][0]).toUpperCase()]={kode:d.prods[i][0],naam:d.prods[i][1]}}
+    allow=null;if(d.only){allow={};for(var j=0;j<d.only.length;j++)allow[String(d.only[j]).toUpperCase()]=1}
+    if(!d.plek){$('msg').className='msg bad';$('msg').textContent='Open a rack in the app first, then scan.'}
+    resend();
   }
-  function finish(code){
-    if(navigator.vibrate)try{navigator.vibrate(80)}catch(e){}
-    send(code);
-    stop().then(function(){
-      if(opener){window.close();}
-      // As die blad nie toegemaak kon word nie (of daar is geen app nie), wys die kode.
-      setTimeout(function(){$('code').textContent=code;$('done').hidden=false;$('msg').hidden=true},300);
-    });
+  if(d.mosSaved){
+    var l=pending().filter(function(x){return !(x.kode===d.mosSaved.kode&&x.t===d.mosSaved.t)});setPending(l);status();
   }
-  function stop(){return scanner&&scanner.isScanning?scanner.stop().catch(function(){}):Promise.resolve()}
-  function start(){
-    busy=false;$('done').hidden=true;$('msg').hidden=false;$('msg').className='msg';$('msg').textContent='Rig die kamera op die barcode.';
-    var F=Html5QrcodeSupportedFormats;
-    scanner=scanner||new Html5Qrcode('reader',{verbose:false,
-      formatsToSupport:[F.EAN_13,F.EAN_8,F.UPC_A,F.UPC_E,F.CODE_128,F.CODE_39,F.ITF,F.QR_CODE],
-      experimentalFeatures:{useBarCodeDetectorIfSupported:true}});
-    scanner.start({facingMode:'environment'},
-      {fps:12,qrbox:function(w,h){var s=Math.min(w,h);return {width:Math.round(w*0.85),height:Math.round(s*0.5)}},aspectRatio:1.333},
-      function(text){if(busy)return;busy=true;finish(String(text).trim())},
-      function(){}
-    ).catch(function(err){
-      $('msg').className='msg bad';
-      $('msg').textContent='Kon nie die kamera oopmaak nie. Gee toestemming vir die kamera in die blaaier se instellings en probeer weer. ('+(err&&err.name||err)+')';
-    });
+  if(d.mosErr){$('msg').className='msg bad';$('msg').textContent=d.mosErr}
+});
+
+/* ---------- product lookup (same rules as the app) ---------- */
+function find(code){
+  if(!prods)return null;
+  var u=String(code).trim().toUpperCase();if(prods[u])return prods[u];
+  if(/^\d+$/.test(u)){var a=u.replace(/^0+/,''),b='0'+u;if(prods[a])return prods[a];if(prods[b])return prods[b]}
+  return null;
+}
+
+/* ---------- scanning ---------- */
+function pauseScan(){try{if(scanner&&scanner.isScanning&&scanner.pause)scanner.pause(false)}catch(e){}}
+function resumeScan(){try{if(scanner&&scanner.resume)scanner.resume()}catch(e){}}
+function onCode(text){
+  var code=String(text).replace(/\s+/g,'');if(!code||busy)return;
+  if(code===lastCode&&Date.now()-lastAt<2500)return;   // same barcode still in view
+  busy=true;if(navigator.vibrate)try{navigator.vibrate(60)}catch(e){}
+  if(!live&&Date.now()-t0<1800){busy=false;return}     // give the app a moment to answer first
+  if(!live){legacy(code);return}
+  var p=find(code),k=p?String(p.kode):code;
+  if(allow&&!allow[k.toUpperCase()]){
+    $('msg').className='msg bad';$('msg').textContent=(p?p.naam:k)+' is not on the recount list.';
+    lastCode=code;lastAt=Date.now();busy=false;return;
   }
-  $('close').onclick=function(){stop().then(function(){window.close();history.length>1&&history.back()})};
-  $('again').onclick=start;
-  start();
+  cur={kode:k};pauseScan();
+  $('i-name').textContent=p?p.naam:'Product not found';$('i-code').textContent=k;
+  $('i-warn').hidden=!!p;$('i-warn').textContent=p?'':'This code is not on the product list. Check the barcode. You can still save a count for it.';
+  $('qty').value='';$('item').hidden=false;$('msg').hidden=true;
+  setTimeout(function(){try{$('qty').focus()}catch(e){}},50);
+}
+function closeItem(text,cls){
+  $('item').hidden=true;$('msg').hidden=false;$('msg').className='msg'+(cls?' '+cls:'');$('msg').textContent=text||'Point the camera at the next barcode.';
+  if(cur){lastCode=cur.kode;lastAt=Date.now()}cur=null;busy=false;resumeScan();
+}
+function save(){
+  var q=parseFloat(String($('qty').value).replace(',','.'));
+  if(isNaN(q)||q<0){$('qty').focus();return}
+  var m={kode:cur.kode,qty:q,t:Date.now()};
+  var l=pending().filter(function(x){return x.kode!==m.kode});l.push(m);setPending(l);
+  post({mosQty:m});saved++;status();
+  closeItem($('i-name').textContent+': '+q+' saved. Scan the next one.','good');
+}
+$('i-save').onclick=save;
+$('qty').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();save()}});
+$('i-skip').onclick=function(){closeItem()};
+
+/* ---------- old behaviour: one scan, hand the code to the app, close ---------- */
+function legacy(code){
+  post({mosScan:code});
+  stop().then(function(){
+    if(opener){window.close()}
+    setTimeout(function(){$('code').textContent=code;$('done').hidden=false;$('msg').hidden=true},300);
+  });
+}
+
+function stop(){return scanner&&scanner.isScanning?scanner.stop().catch(function(){}):Promise.resolve()}
+function start(){
+  busy=false;$('done').hidden=true;$('item').hidden=true;$('msg').hidden=false;$('msg').className='msg';$('msg').textContent='Point the camera at the barcode.';
+  var F=Html5QrcodeSupportedFormats;
+  scanner=scanner||new Html5Qrcode('reader',{verbose:false,
+    formatsToSupport:[F.EAN_13,F.EAN_8,F.UPC_A,F.UPC_E,F.CODE_128,F.CODE_39],
+    experimentalFeatures:{useBarCodeDetectorIfSupported:true}});
+  scanner.start({facingMode:'environment'},
+    {fps:15,qrbox:function(w,h){return {width:Math.round(w*0.9),height:Math.round(Math.min(w,h)*0.45)}},aspectRatio:1.333,
+     videoConstraints:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}}},
+    onCode,function(){}
+  ).then(function(){
+    started=true;
+    try{scanner.applyVideoConstraints({advanced:[{focusMode:'continuous'}]}).catch(function(){})}catch(e){}
+    try{var c=scanner.getRunningTrackCapabilities();if(c&&c.torch)$('torch').hidden=false}catch(e){}
+  }).catch(function(err){
+    $('msg').className='msg bad';
+    $('msg').textContent='Could not open the camera. Allow the camera for this page in the browser settings and try again. ('+(err&&err.name||err)+')';
+  });
+}
+$('torch').onclick=function(){torchOn=!torchOn;try{scanner.applyVideoConstraints({advanced:[{torch:torchOn}]}).catch(function(){})}catch(e){}$('torch').textContent=torchOn?'Light off':'Light'};
+$('close').onclick=function(){
+  var n=pending().length;
+  if(n&&!confirm(n+' count(s) have not been confirmed by the app yet. Go back to the app and check them. Close the scanner?'))return;
+  stop().then(function(){window.close();history.length>1&&history.back()});
+};
+$('again').onclick=start;
+
+/* Ask the app whether it supports continuous counting; keep asking for a moment in case it is slow to wake. */
+var asks=0,askT=setInterval(function(){if(live||asks++>6){clearInterval(askT);return}post({mosScanReady:2})},400);
+post({mosScanReady:2});
+setInterval(function(){if(live&&pending().length)resend()},3000);
+start();
+/* Counts left unconfirmed by an earlier scanner session are never re-sent: they could land on the wrong rack. */
+(function(){var old=pending();setPending([]);if(old.length){$('msg').className='msg bad';$('msg').textContent=old.length+' count(s) from the last scanner session were never confirmed by the app. Check them in the app.'}})();
 })();
 </script>
 </body>
